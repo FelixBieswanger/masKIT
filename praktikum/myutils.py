@@ -7,6 +7,7 @@ import math
 import tensorflow as tf
 
 
+
 class Complexity_Measures:
 
     def entropy(data):
@@ -162,3 +163,4 @@ class Helpers:
             if predictions[i] == labels[i]:
                 corrects += 1
         print("Accurracy",corrects / len(predictions))
+
