@@ -75,14 +75,14 @@ class Datasets:
         y_test = np.array([Datasets.y_test[0]for _ in range(len(Datasets.x_test))])
         return x_train, y_train, x_test, y_test
 
-    def get_all_data():
+    def get_all_data(concat = False):
         all_num = Datasets.ALL_NUMBERS()
         six_nines = Datasets.SIX_AND_NINES()
         only_sixes = Datasets.ONLY_SIXES()
         random = Datasets.RANDOM()
         same_picture = Datasets.SAMEPICTURE()
 
-        return  {
+        data = {
             "ALL_NUMBERS": {
                 "x_train": all_num[0],
                 "y_train": all_num[1],
@@ -115,8 +115,17 @@ class Datasets:
                 "y_test": same_picture[3]
             }
         }
-  
 
+        if concat:
+            new_data = {}
+            for dataset in data:
+                new_data[dataset] = dict()
+                new_data[dataset]["x"] = np.concatenate((data[dataset]["x_train"],data[dataset]["x_test"]))
+                new_data[dataset]["y"] = np.concatenate((data[dataset]["y_train"],data[dataset]["y_test"]))
+            return new_data
+        else: return data    
+       
+  
 class Helpers:
 
     def normalize(data,min=0,max=255):
@@ -140,14 +149,16 @@ class Helpers:
                 ax[i, j].axis('off')
         plt.show()
 
-    def PCA(data, n_components=2):
+    def PCA(data,reshape=True,n_components=2):
         """
         Performs PCA on data.
         """
         data_dim = data.shape[1]*data.shape[2]
         pca = PCA(n_components=n_components)
         data_transformed = pca.fit_transform(data.reshape(data.shape[0],data_dim))
-        return data_transformed.reshape(data.shape[0],int(math.sqrt(n_components)),int(math.sqrt(n_components)))
+        if reshape:
+            return data_transformed.reshape(data.shape[0],int(math.sqrt(n_components)),int(math.sqrt(n_components)))
+        else: return data_transformed
 
 
     def plot_classify_results(predictions,labels):
