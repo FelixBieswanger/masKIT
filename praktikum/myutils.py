@@ -71,8 +71,8 @@ class Datasets:
     def SAMEPICTURE():
         x_train = np.array([Datasets.x_train[0] for _ in range(len(Datasets.x_train))])
         y_train = np.array([Datasets.y_train[0] for _ in range(len(Datasets.x_train))])
-        x_test = np.array([Datasets.x_test[0] for _ in range(len(Datasets.x_test))])
-        y_test = np.array([Datasets.y_test[0]for _ in range(len(Datasets.x_test))])
+        x_test = np.array([Datasets.x_train[0] for _ in range(len(Datasets.x_test))])
+        y_test = np.array([Datasets.y_train[0] for _ in range(len(Datasets.x_test))])
         return x_train, y_train, x_test, y_test
 
     def get_all_data(concat = False):
@@ -120,6 +120,7 @@ class Datasets:
             new_data = {}
             for dataset in data:
                 new_data[dataset] = dict()
+                print(dataset)
                 new_data[dataset]["x"] = np.concatenate((data[dataset]["x_train"],data[dataset]["x_test"]))
                 new_data[dataset]["y"] = np.concatenate((data[dataset]["y_train"],data[dataset]["y_test"]))
             return new_data
