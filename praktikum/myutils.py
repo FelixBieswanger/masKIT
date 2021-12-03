@@ -5,6 +5,52 @@ from sklearn.decomposition import PCA
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 import math
 import tensorflow as tf
+import os
+import json
+import itertools
+
+
+class NeuralNetwork:
+    model = tf.keras.Sequential([
+        tf.keras.layers.Flatten(),
+        tf.keras.layers.Dense(4, activation='relu'),
+        tf.keras.layers.Dense(2, activation='relu'),
+        tf.keras.layers.Dense(1, activation='sigmoid')
+    ])
+
+    def run(type, x_train, y_train, x_test, y_test, run_number=3, epochs=3, batch_size=32):
+        #set-up logging
+        if os.path.exists("results/neuralnetwork/"+type+".json"):
+            os.remove("results/neuralnetwork/"+type+".json")
+
+        for run_number in range(run_number):
+
+            for subset in itertools.combinations([i for i in range(10)],2):
+                
+                x_train_subset = x_train[(y_train == subset[0]) | (y_train == subset[1])]
+                y_train_subset = y_train[(y_train == subset[0]) | (y_train == subset[1])]
+                y_train_subset = np.where(y_train_subset == subset[0], 0, y_train_subset)
+                y_train_subset = np.where(y_train_subset == subset[1], 1, y_train_subset)
+
+                x_test_subset = x_test[(y_test == subset[0]) | (y_test == subset[1])]
+                y_test_subset = y_test[(y_test == subset[0]) | (y_test == subset[1])]
+                y_test_subset = np.where(y_test_subset == subset[0], 0, y_test_subset)
+                y_test_subset = np.where(y_test_subset == subset[1], 1, y_test_subset)
+
+    
+                tf.keras.backend.clear_session()
+                NeuralNetwork.model.compile(optimizer='adam',
+                                    loss='binary_crossentropy',
+                                    metrics=['accuracy'])
+                hist = NeuralNetwork.model.fit(x_train_subset, y_train_subset, epochs=3, batch_size=32,validation_data=(x_test_subset, y_test_subset),verbose=0)
+
+                Helpers.log_results(filename="results/neuralnetwork/"+type+".json", result={
+                    str(run_number): {
+                        str(subset):hist.history["val_accuracy"][-1]
+                    } 
+                 })
+
+    
 
 
 
@@ -26,16 +72,52 @@ class Complexity_Measures:
         for i in range(dim):
             #calculate the probability of each pixel value
             _, counts = np.unique(data_reshape[:, i], return_counts=True)
-            entropy[i] = np.sum(-counts / len(data_reshape[:, i])
-                                 * np.log(counts / len(data_reshape[:, i])))
+            entropy[i] = -np.sum(counts / len(data_reshape[:, i])
+                                 * np.log2(counts / len(data_reshape[:, i])))
 
         #returning the entropy of each pixel as np.array                                
         return entropy
         
 
-    def method2(data):
-        return 3
+    def fischer_discriminat_ratio(x, y):
+        x = x.reshape(x.shape[0],x.shape[1]*x.shape[2])
 
+        #calculate the fisher discriminant ratio of data  
+        unique_y = np.unique(y)
+    
+        
+        classes = {}
+        for label in unique_y:
+            classes[label] = x[y == label]
+        
+        fdr = np.zeros(x.shape[1])
+        for fi in range(4):
+        
+            zähler = list()
+            for j in unique_y:
+                for k in unique_y:
+                    if j != k:
+                        p_cj = len(classes[j]) / len(x)
+                        p_ck = len(classes[k]) / len(x)
+        
+                        u_cj = np.mean(classes[j][:,fi], axis=0)
+                        u_ck = np.mean(classes[k][:,fi], axis=0)
+        
+                        zähler.append(p_cj*p_ck*(np.power((u_cj-u_ck),2)))
+        
+        
+            nenner = list()
+            for j in unique_y:
+                p_cj = len(classes[j]) / len(x)
+                sigma_cj = np.std(classes[j][:,fi], axis=0)
+                nenner.append(p_cj*(np.power(sigma_cj,2)))
+        
+            if np.sum(nenner) == 0.0:
+                fdr[fi] = 0
+            else:
+                fdr[fi] = np.sum(zähler)/np.sum(nenner)
+        
+        return fdr
 
 class Datasets:
     (x_train, y_train), (x_test, y_test) = tf.keras.datasets.mnist.load_data()
@@ -129,14 +211,35 @@ class Datasets:
   
 class Helpers:
 
-    def normalize(data,min=0,max=255):
+    def log_results(result, filename):
+        if not os.path.exists(filename):
+            with(open(filename,"w")) as f:
+                f.write(json.dumps(result))
+        else:
+            with(open(filename,"r")) as f:
+                data = json.load(f)
+        
+            for key in result:
+                if key in data:
+                    data[key].update(result[key])
+                else:
+                    print(key,"not in data")
+                    data.update(result)
+
+            with(open(filename,"w")) as f:
+                f.write(json.dumps(data))
+
+
+
+
+    def normalize(data,min=0,max=255,dtype=int):
         """
         Normalizes data between min and max.
         """
         data_min = np.min(data)
         data_max = np.max(data)
         data_normalized = (data-data_min)/(data_max-data_min)*(max-min)+min
-        return data_normalized.astype(int)
+        return data_normalized.astype(dtype)
 
     def plot_grid(data, labels=None ,rows=2, cols=5):
         """
