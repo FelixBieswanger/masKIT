@@ -1,6 +1,7 @@
 import collections
 import matplotlib.pyplot as plt
 import numpy as np
+from sklearn.preprocessing import MinMaxScaler
 from sklearn.decomposition import PCA
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 import math
@@ -8,22 +9,86 @@ import tensorflow as tf
 import os
 import json
 import itertools
+from tensorflow.keras import layers, losses
+from tensorflow.keras.models import Model
+
+
+
+class Preprocessing:
+
+    def minmax_scaler(data,min=0,max=1):
+        scaler = MinMaxScaler(feature_range=(min, max))
+        return scaler.fit_transform(data)
+
+    
+    def preprocessing_methods():
+        return zip([Preprocessing.PCA, Preprocessing.Autoencoder,Preprocessing.Raw] , ["PCA", "Autoencoder","RAW"])
+
+    def Raw(x_train,x_test,outputsize=4):
+        return x_train, x_test
+
+
+    def PCA(x_train,x_test,outputsize=4):
+        pca = PCA(n_components=outputsize)
+        pca.fit(x_train)
+        x_train_pca = pca.transform(x_train)
+        x_test_pca = pca.transform(x_test)
+
+        return x_train_pca, x_test_pca
+
+    def Autoencoder(x_train,x_test,outputsize=4,epochs=3):
+
+        #mute tensorflow logging
+        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+        class AutoencoderTF(Model):
+            def __init__(self, latent_dim):
+                super(AutoencoderTF, self).__init__()
+                self.encoder = tf.keras.Sequential([
+                    layers.Dense(784, activation='relu'),
+                    layers.Dense(392, activation='relu'),
+                    layers.Dense(16, activation='relu'),
+                    layers.Dense(latent_dim, activation='relu'),
+                ])
+                self.decoder = tf.keras.Sequential([
+                    layers.Dense(latent_dim,activation='sigmoid'),
+                    layers.Dense(16, activation='relu'),
+                    layers.Dense(392, activation='relu'),
+                    layers.Dense(784, activation='relu') # output layer
+                ])
+                self.compile(optimizer='adam', loss=losses.MeanSquaredError())
+                
+
+            def call(self, x):
+                encoded = self.encoder(x)
+                decoded = self.decoder(encoded)
+                return decoded
+
+        autoencoder = AutoencoderTF(latent_dim=outputsize)
+
+        x_train = x_train / 255
+        x_test = x_test / 255
+
+        autoencoder.fit(x_train, x_train, epochs=epochs, batch_size=32)
+
+        x_train_auto = autoencoder.encoder(x_train).numpy()
+        x_test_auto = autoencoder.encoder(x_test).numpy()
+        return x_train_auto, x_test_auto
 
 
 class NeuralNetwork:
-    model = tf.keras.Sequential([
-        tf.keras.layers.Flatten(),
-        tf.keras.layers.Dense(4, activation='relu'),
-        tf.keras.layers.Dense(2, activation='relu'),
-        tf.keras.layers.Dense(1, activation='sigmoid')
-    ])
+    
+    def run(preprocessing, x_train, y_train, x_test, y_test, run_number=3, epochs=3, batch_size=32):
 
-    def run(type, x_train, y_train, x_test, y_test, run_number=3, epochs=3, batch_size=32):
-        #set-up logging
-        if os.path.exists("results/neuralnetwork/"+type+".json"):
-            os.remove("results/neuralnetwork/"+type+".json")
+        #mute tensorflow logging
+        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
-        for run_number in range(run_number):
+        #set-up result storing
+        if os.path.exists("results/neuralnetwork/"+preprocessing+".json"):
+            os.remove("results/neuralnetwork/"+preprocessing+".json")
+
+        for run in range(run_number):
+
+            print(run, "of", run_number)
 
             for subset in itertools.combinations([i for i in range(10)],2):
                 
@@ -37,18 +102,39 @@ class NeuralNetwork:
                 y_test_subset = np.where(y_test_subset == subset[0], 0, y_test_subset)
                 y_test_subset = np.where(y_test_subset == subset[1], 1, y_test_subset)
 
-    
-                tf.keras.backend.clear_session()
-                NeuralNetwork.model.compile(optimizer='adam',
-                                    loss='binary_crossentropy',
-                                    metrics=['accuracy'])
-                hist = NeuralNetwork.model.fit(x_train_subset, y_train_subset, epochs=3, batch_size=32,validation_data=(x_test_subset, y_test_subset),verbose=0)
+                if preprocessing == "pca":
+                    pca = PCA(n_components=4)
+                    x_train_subset = pca.fit_transform(x_train_subset)
+                    x_test_subset = pca.transform(x_test_subset)
 
-                Helpers.log_results(filename="results/neuralnetwork/"+type+".json", result={
-                    str(run_number): {
-                        str(subset):hist.history["val_accuracy"][-1]
-                    } 
-                 })
+                    x_train_subset = Helpers.normalize(x_train_subset,min=0,max=1,dtype=np.float32)
+                    x_test_subset = Helpers.normalize(x_test_subset,min=0,max=1,dtype=np.float32)
+
+                elif preprocessing == "raw":
+                    x_train_subset = Helpers.normalize(x_train_subset,min=0,max=1,dtype=np.float32)
+                    x_test_subset = Helpers.normalize(x_test_subset,min=0,max=1,dtype=np.float32)
+
+                with tf.device('/gpu:0'):
+                    tf.keras.backend.clear_session()
+
+                    model = tf.keras.Sequential([
+                        tf.keras.layers.Dense(4, activation='relu'),
+                        tf.keras.layers.Dense(2, activation='relu'),
+                        tf.keras.layers.Dense(1, activation='sigmoid')
+                    ])
+
+                    model.compile(optimizer='adam',
+                                        loss='binary_crossentropy',
+                                        metrics=['accuracy'])
+                    hist = model.fit(x_train_subset, y_train_subset, epochs=3, batch_size=32,validation_data=(x_test_subset, y_test_subset),verbose=0)
+
+                    Helpers.log_results(filename="results/neuralnetwork/"+preprocessing+".json", result={
+                        str(run): {
+                            str(subset):hist.history["val_accuracy"][-1]
+                        } 
+                    })
+
+                    del model
 
     
 
@@ -80,8 +166,6 @@ class Complexity_Measures:
         
 
     def fischer_discriminat_ratio(x, y):
-        x = x.reshape(x.shape[0],x.shape[1]*x.shape[2])
-
         #calculate the fisher discriminant ratio of data  
         unique_y = np.unique(y)
     
@@ -120,6 +204,26 @@ class Complexity_Measures:
         return fdr
 
 class Datasets:
+
+    def get_preprocessed_datasets():
+        data = dict()
+
+        #build dict holding all data
+        for preprocessing in os.listdir('data'):
+
+            if preprocessing not in data:
+                data[preprocessing] = dict()
+
+            for dataset in os.listdir('data/' + preprocessing):
+                if dataset not in data[preprocessing]:
+                    data[preprocessing][dataset] = dict()
+
+                for type in os.listdir('data/' + preprocessing + '/' + dataset):
+                    data[preprocessing][dataset][type.split(".")[0]] = np.load('data/' + preprocessing + '/' + dataset + '/' + type)
+
+        return data
+
+
     (x_train, y_train), (x_test, y_test) = tf.keras.datasets.mnist.load_data()
 
     def ALL_NUMBERS():
@@ -223,23 +327,21 @@ class Helpers:
                 if key in data:
                     data[key].update(result[key])
                 else:
-                    print(key,"not in data")
                     data.update(result)
 
             with(open(filename,"w")) as f:
                 f.write(json.dumps(data))
 
 
-
-
-    def normalize(data,min=0,max=255,dtype=int):
+    def normalize(data,min=0,max=255,):
         """
         Normalizes data between min and max.
         """
-        data_min = np.min(data)
-        data_max = np.max(data)
-        data_normalized = (data-data_min)/(data_max-data_min)*(max-min)+min
-        return data_normalized.astype(dtype)
+        data_norm = data-(np.min(data))
+        print(np.max(data_norm) / (max - min))
+        data_norm = data_norm / ( np.max(data_norm) / (max - min))
+        data_norm = data_norm+min
+        return data_norm
 
     def plot_grid(data, labels=None ,rows=2, cols=5):
         """
