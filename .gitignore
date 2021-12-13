@@ -1,3 +1,7 @@
+
+# Praktikum Specific:
+Praktikum/data/
+
 key.txt
 .vscode/*
 .idea/*

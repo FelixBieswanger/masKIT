@@ -1,4 +1,5 @@
 import collections
+from genericpath import exists
 import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
@@ -12,21 +13,17 @@ import itertools
 from tensorflow.keras import layers, losses
 from tensorflow.keras.models import Model
 
-
-
 class Preprocessing:
 
     def minmax_scaler(data,min=0,max=1):
         scaler = MinMaxScaler(feature_range=(min, max))
         return scaler.fit_transform(data)
 
-    
     def preprocessing_methods():
         return zip([Preprocessing.PCA, Preprocessing.Autoencoder,Preprocessing.Raw] , ["PCA", "Autoencoder","RAW"])
 
     def Raw(x_train,x_test,outputsize=4):
         return x_train, x_test
-
 
     def PCA(x_train,x_test,outputsize=4):
         pca = PCA(n_components=outputsize)
@@ -37,110 +34,99 @@ class Preprocessing:
         return x_train_pca, x_test_pca
 
     def Autoencoder(x_train,x_test,outputsize=4,epochs=3):
-
         #mute tensorflow logging
         os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
         class AutoencoderTF(Model):
             def __init__(self, latent_dim):
                 super(AutoencoderTF, self).__init__()
+
                 self.encoder = tf.keras.Sequential([
                     layers.Dense(784, activation='relu'),
-                    layers.Dense(392, activation='relu'),
-                    layers.Dense(16, activation='relu'),
-                    layers.Dense(latent_dim, activation='relu'),
+                    layers.Dense(392, activation='sigmoid'),
+                    layers.Dense(16, activation='sigmoid'),
+                    layers.Dense(latent_dim, activation='sigmoid'),
                 ])
+
                 self.decoder = tf.keras.Sequential([
                     layers.Dense(latent_dim,activation='sigmoid'),
-                    layers.Dense(16, activation='relu'),
-                    layers.Dense(392, activation='relu'),
-                    layers.Dense(784, activation='relu') # output layer
+                    layers.Dense(16, activation='sigmoid'),
+                    layers.Dense(392, activation='sigmoid'),
+                    layers.Dense(784, activation='sigmoid') # output layer
                 ])
                 self.compile(optimizer='adam', loss=losses.MeanSquaredError())
                 
-
             def call(self, x):
                 encoded = self.encoder(x)
                 decoded = self.decoder(encoded)
                 return decoded
+
+        tf.random.set_seed(42)
 
         autoencoder = AutoencoderTF(latent_dim=outputsize)
 
         x_train = x_train / 255
         x_test = x_test / 255
 
-        autoencoder.fit(x_train, x_train, epochs=epochs, batch_size=32)
+        hist = autoencoder.fit(x_train, x_train, epochs=epochs, batch_size=32)
 
         x_train_auto = autoencoder.encoder(x_train).numpy()
         x_test_auto = autoencoder.encoder(x_test).numpy()
-        return x_train_auto, x_test_auto
 
+        del autoencoder
 
-class NeuralNetwork:
-    
-    def run(preprocessing, x_train, y_train, x_test, y_test, run_number=3, epochs=3, batch_size=32):
-
-        #mute tensorflow logging
-        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-
-        #set-up result storing
-        if os.path.exists("results/neuralnetwork/"+preprocessing+".json"):
-            os.remove("results/neuralnetwork/"+preprocessing+".json")
-
-        for run in range(run_number):
-
-            print(run, "of", run_number)
-
-            for subset in itertools.combinations([i for i in range(10)],2):
-                
-                x_train_subset = x_train[(y_train == subset[0]) | (y_train == subset[1])]
-                y_train_subset = y_train[(y_train == subset[0]) | (y_train == subset[1])]
-                y_train_subset = np.where(y_train_subset == subset[0], 0, y_train_subset)
-                y_train_subset = np.where(y_train_subset == subset[1], 1, y_train_subset)
-
-                x_test_subset = x_test[(y_test == subset[0]) | (y_test == subset[1])]
-                y_test_subset = y_test[(y_test == subset[0]) | (y_test == subset[1])]
-                y_test_subset = np.where(y_test_subset == subset[0], 0, y_test_subset)
-                y_test_subset = np.where(y_test_subset == subset[1], 1, y_test_subset)
-
-                if preprocessing == "pca":
-                    pca = PCA(n_components=4)
-                    x_train_subset = pca.fit_transform(x_train_subset)
-                    x_test_subset = pca.transform(x_test_subset)
-
-                    x_train_subset = Helpers.normalize(x_train_subset,min=0,max=1,dtype=np.float32)
-                    x_test_subset = Helpers.normalize(x_test_subset,min=0,max=1,dtype=np.float32)
-
-                elif preprocessing == "raw":
-                    x_train_subset = Helpers.normalize(x_train_subset,min=0,max=1,dtype=np.float32)
-                    x_test_subset = Helpers.normalize(x_test_subset,min=0,max=1,dtype=np.float32)
-
-                with tf.device('/gpu:0'):
-                    tf.keras.backend.clear_session()
-
-                    model = tf.keras.Sequential([
-                        tf.keras.layers.Dense(4, activation='relu'),
-                        tf.keras.layers.Dense(2, activation='relu'),
-                        tf.keras.layers.Dense(1, activation='sigmoid')
-                    ])
-
-                    model.compile(optimizer='adam',
-                                        loss='binary_crossentropy',
-                                        metrics=['accuracy'])
-                    hist = model.fit(x_train_subset, y_train_subset, epochs=3, batch_size=32,validation_data=(x_test_subset, y_test_subset),verbose=0)
-
-                    Helpers.log_results(filename="results/neuralnetwork/"+preprocessing+".json", result={
-                        str(run): {
-                            str(subset):hist.history["val_accuracy"][-1]
-                        } 
-                    })
-
-                    del model
-
-    
-
-
+        return x_train_auto, x_test_auto , hist
 
 class Complexity_Measures:
+    def neuralnetwork(x_train, y_train, x_test, y_test, epochs=3, batch_size=32):
+        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+
+        with tf.device('/gpu:0'):
+            tf.compat.v1.reset_default_graph()
+            tf.keras.backend.clear_session()
+
+            model = tf.keras.Sequential([
+                tf.keras.layers.Dense(4, activation='relu'),
+                tf.keras.layers.Dense(2, activation='relu'),
+                tf.keras.layers.Dense(1, activation='sigmoid')
+            ])
+
+            model.compile(optimizer='adam',
+                                loss='binary_crossentropy',
+                                metrics=['accuracy'])
+            hist = model.fit(x_train, y_train, epochs=epochs, batch_size=32,validation_data=(x_test, y_test),verbose=0)   
+
+            del model
+
+            return {
+                "train_accuracy":hist.history["val_accuracy"],
+                "train_loss":hist.history["val_loss"],
+                "test_accuracy":hist.history["val_accuracy"],
+                "test_loss":hist.history["val_loss"]
+
+            }
+
+    def get_measures(*args):
+        result = dict()
+
+        for preprocessing in os.listdir("data/"):
+        
+            for subset in os.listdir("data/"+preprocessing+"/"):
+
+                if os.path.exists("data/"+preprocessing+"/"+subset+"/measures.json"):
+                    with open("data/"+preprocessing+"/"+subset+"/measures.json") as json_file:
+                        measures = json.load(json_file)
+                    
+                    for measure in measures:
+                        if measure not in result:
+                            result[measure] = dict()
+                            result[measure][preprocessing] = dict()
+                            result[measure][preprocessing][subset] = measures[measure]
+                        else:
+                            if preprocessing not in result[measure]:
+                                result[measure][preprocessing] = dict()
+                            result[measure][preprocessing][subset] = measures[measure]
+
+        return result
 
     def entropy(data):
         """
@@ -164,10 +150,11 @@ class Complexity_Measures:
         #returning the entropy of each pixel as np.array                                
         return entropy
         
-
     def fischer_discriminat_ratio(x, y):
         #calculate the fisher discriminant ratio of data  
         unique_y = np.unique(y)
+
+        x = Helpers.normalize(x,min=0,max=255).astype("int")
     
         
         classes = {}
@@ -201,15 +188,27 @@ class Complexity_Measures:
             else:
                 fdr[fi] = np.sum(zähler)/np.sum(nenner)
         
-        return fdr
+        return 1/ (1+np.amax(fdr))
 
 class Datasets:
 
-    def get_preprocessed_datasets():
+    (x_train, y_train), (x_test, y_test) = tf.keras.datasets.mnist.load_data()
+
+    def get_preprocessed_datasets(*args):
+
+        #load the datasets
         data = dict()
 
+        requested_datasets = args
+        if args == ():
+            requested_datasets = os.listdir('data')
+
         #build dict holding all data
-        for preprocessing in os.listdir('data'):
+        for preprocessing in requested_datasets:
+
+            if preprocessing not in os.listdir('data'):
+                print(preprocessing, "not found")
+                continue
 
             if preprocessing not in data:
                 data[preprocessing] = dict()
@@ -219,12 +218,10 @@ class Datasets:
                     data[preprocessing][dataset] = dict()
 
                 for type in os.listdir('data/' + preprocessing + '/' + dataset):
-                    data[preprocessing][dataset][type.split(".")[0]] = np.load('data/' + preprocessing + '/' + dataset + '/' + type)
+                    if type.split(".")[1] == "npy":
+                        data[preprocessing][dataset][type.split(".")[0]] = np.load('data/' + preprocessing + '/' + dataset + '/' + type)
 
         return data
-
-
-    (x_train, y_train), (x_test, y_test) = tf.keras.datasets.mnist.load_data()
 
     def ALL_NUMBERS():
         return Datasets.x_train, Datasets.y_train, Datasets.x_test, Datasets.y_test
@@ -312,33 +309,38 @@ class Datasets:
             return new_data
         else: return data    
        
-  
 class Helpers:
 
-    def log_results(result, filename):
-        if not os.path.exists(filename):
-            with(open(filename,"w")) as f:
-                f.write(json.dumps(result))
+    def reshape(data, shape):
+        reshape_shape = (data.shape[0],) + shape
+        print("reshape_shape", reshape_shape)
+        return data.reshape(reshape_shape)
+
+    def write_measure(measure,value,preprocessing,subset,runiteration=-1):
+        if not os.path.exists("data/"+preprocessing+"/"+subset+"/measures.json"):
+            with open("data/"+preprocessing+"/"+subset+"/measures.json","w") as f:
+                if runiteration > -1:
+                    value = [value]
+                json.dump({
+                    measure: value
+                },f,indent=4)
         else:
-            with(open(filename,"r")) as f:
-                data = json.load(f)
-        
-            for key in result:
-                if key in data:
-                    data[key].update(result[key])
-                else:
-                    data.update(result)
+            d = json.loads(open("data/"+preprocessing+"/"+subset+"/measures.json").read())
 
-            with(open(filename,"w")) as f:
-                f.write(json.dumps(data))
+            if runiteration > -1:
+                if runiteration == 0:
+                    d[measure] = []
+                d[measure].append(value)
+            else: d[measure] = [value]
 
+            with open("data/"+preprocessing+"/"+subset+"/measures.json","w") as f:
+                json.dump(d,f,indent=4)
 
-    def normalize(data,min=0,max=255,):
+    def normalize(data,min=0,max=255):
         """
         Normalizes data between min and max.
         """
         data_norm = data-(np.min(data))
-        print(np.max(data_norm) / (max - min))
         data_norm = data_norm / ( np.max(data_norm) / (max - min))
         data_norm = data_norm+min
         return data_norm
@@ -347,6 +349,9 @@ class Helpers:
         """
         Plots a grid of data.
         """
+        root = int(math.sqrt(data.shape[1]))
+        data = data.reshape(data.shape[0], root, root)
+
         fig, ax = plt.subplots(rows, cols, figsize=(15, 8))
         for i in range(rows):
             for j in range(cols):
@@ -365,7 +370,6 @@ class Helpers:
         if reshape:
             return data_transformed.reshape(data.shape[0],int(math.sqrt(n_components)),int(math.sqrt(n_components)))
         else: return data_transformed
-
 
     def plot_classify_results(predictions,labels):
         """

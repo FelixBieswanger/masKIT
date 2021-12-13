@@ -1,0 +1,4 @@
+Kurzes Update: 
+Ich habe ein Neural Network (mit der gleichen Architektur, Epochen Anzahl, etc) einmal auf die Raw Daten und einmal auf die PCA vorverarbeiteten Daten angewandt. Wie Eileen angemerkt dieses mal 3 Durchläufe durchgeführt. In der Tabelle habe ich die Means und die Standardabweichung pro Variante geloggt. Man sieht das PCA im Schnitt eine geringere Accuracy hervorbringt und auch zwischen den Durchläufen mehr schwankt.
+
+https://github.com/FelixBieswanger/masKIT/blob/main/praktikum/results/neuralnetwork/results.html
