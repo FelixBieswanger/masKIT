@@ -7,11 +7,121 @@ from sklearn.decomposition import PCA
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 import math
 import tensorflow as tf
+import pennylane as qml
+from pennylane import numpy as np
 import os
 import json
 import itertools
 from tensorflow.keras import layers, losses
 from tensorflow.keras.models import Model
+
+
+class QuatumCircuit:
+
+    def __init__(self):
+
+        def variational_training_circuit(params, data):
+            qml.templates.embeddings.AngleEmbedding(
+                features=data, wires=range(wires), rotation="X"
+            )
+            return variational_circuit(params)
+
+        def variational_circuit(params):
+            for layer in range(layers):
+                for wire in range(wires):
+                    qml.RX(params[layer][wire][0], wires=wire)
+                    qml.RY(params[layer][wire][1], wires=wire)
+                for wire in range(0, wires - 1, 2):
+                    qml.CZ(wires=[wire, wire + 1])
+                for wire in range(1, wires - 1, 2):
+                    qml.CZ(wires=[wire, wire + 1])
+            return qml.expval(qml.PauliZ(0))
+
+        # fixed variables
+        wires = 4
+        layers = 4
+
+        # init params
+        self.parameters = np.random.uniform(low=-np.pi, high=np.pi, size=(layers, wires, 2))
+        dev = qml.device('default.qubit', wires=wires, shots=1000)
+
+        self.training_circuit = qml.QNode(func=variational_training_circuit, device=dev)
+
+    # some helpers
+    def correctly_classified(self, params, data, target):
+        prediction = self.training_circuit(params, data)
+        if prediction < 0 and target[0] > 0:
+            return True
+        elif prediction > 0 and target[1] > 0:
+            return True
+        return False
+
+    def overall_cost_and_correct(self, cost_fn, params, data, targets):
+        cost = correct_count = 0
+        for datum, target in zip(data, targets):
+            cost += cost_fn(params, datum, target)
+            correct_count += int(self.correctly_classified(params, datum, target))
+        return cost, correct_count
+
+    def distributed_cost(self, params, data, target):
+        """Cost function distributes probabilities to both classes."""
+        prediction = self.training_circuit(params, data)
+        scaled_prediction = prediction + 1 / 2
+        predictions = np.array([1 - scaled_prediction, scaled_prediction])
+        return np.sum(np.abs(target - predictions))
+
+    def cost(self, params, data, target):
+        """Cost function penalizes choosing wrong class."""
+        prediction = self.training_circuit(params, data)
+        predictions = np.array([0, prediction]) if prediction > 0 else np.array([prediction * -1, 0])
+        return np.sum(np.abs(target - predictions))
+
+    def train(self,x_train,y_train,x_test,y_test,epochs):
+
+        optimizer = qml.AdamOptimizer()
+        cost_fn = self.distributed_cost
+
+        hist = dict()
+
+        hist['accuracy'] = []
+        hist['val_accuracy'] = []
+        hist['loss'] = []
+        hist['val_loss'] = []
+        for epoch in range(epochs):
+
+            training_correct_count = 0
+            training_cost = 0
+            for datum, target in zip(x_train, y_train):
+                self.parameters = optimizer.step(lambda weights: cost_fn(weights, datum, target), self.parameters)
+
+                training_cost += cost_fn(self.parameters, datum, target)
+                training_correct_count += int(self.correctly_classified(self.parameters, datum, target))
+
+
+            test_cost, test_correct_count = self.overall_cost_and_correct(cost_fn, self.parameters, x_test, y_test)
+
+            hist['accuracy'].append(training_correct_count / len(x_train))
+            hist['val_accuracy'].append(test_correct_count / len(x_test))
+            hist['loss'].append(training_cost / len(x_train))
+            hist['val_loss'].append(test_cost / len(x_test))
+
+            print("epoch {}: train_cost:{:.3f} train_acc:{:.3f} test_cost:{:.3f}  test_acc:{:.3f}".
+            format(epoch, hist["loss"][-1],hist["accuracy"][-1],hist["val_loss"][-1],hist["val_accuracy"][-1]))
+
+        return hist
+
+    def predict(self,x_test):
+        prediction = self.training_circuit(self.parameters, x_test)
+
+        if prediction < 0:
+            return [1, 0]
+        else:
+            return [0, 1]
+        
+
+
+
+
 
 class Preprocessing:
 
@@ -33,7 +143,7 @@ class Preprocessing:
 
         return x_train_pca, x_test_pca
 
-    def Autoencoder(x_train,x_test,outputsize=4,epochs=3):
+    def Autoencoder(x_train,x_test,outputsize=4,epochs=6):
         #mute tensorflow logging
         os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
         class AutoencoderTF(Model):
@@ -42,9 +152,9 @@ class Preprocessing:
 
                 self.encoder = tf.keras.Sequential([
                     layers.Dense(784, activation='relu'),
-                    layers.Dense(392, activation='sigmoid'),
-                    layers.Dense(16, activation='sigmoid'),
-                    layers.Dense(latent_dim, activation='sigmoid'),
+                    layers.Dense(392, activation='relu'),
+                    layers.Dense(16, activation='relu'),
+                    layers.Dense(latent_dim, activation='relu'),
                 ])
 
                 self.decoder = tf.keras.Sequential([
@@ -67,7 +177,9 @@ class Preprocessing:
         x_train = x_train / 255
         x_test = x_test / 255
 
-        hist = autoencoder.fit(x_train, x_train, epochs=epochs, batch_size=32)
+        tf.compat.v1.reset_default_graph()
+        with tf.device('/gpu:0'):
+            hist = autoencoder.fit(x_train, x_train, epochs=epochs,verbose=0,batch_size=32).history
 
         x_train_auto = autoencoder.encoder(x_train).numpy()
         x_test_auto = autoencoder.encoder(x_test).numpy()
@@ -316,16 +428,46 @@ class Helpers:
         print("reshape_shape", reshape_shape)
         return data.reshape(reshape_shape)
 
+    def write_measure2(measure,value,preprocessing,subset,config=None,runiteration=-1):
+        if not os.path.isdir("measure/" + preprocessing):
+            os.mkdir("measure/" + preprocessing)
+
+        if not os.path.exists("measure/" + preprocessing + "/" + subset+".json"):
+            with open("measure/" + preprocessing + "/" + subset+".json", "w") as f:
+                json.dump({}, f)
+
+        
+        with open("measure/" + preprocessing + "/" + subset+".json", "r+") as f:
+            data = json.load(f)
+
+            f.truncate()
+
+
+
+            if config is None:
+                data[measure] = value
+                json.dump(data, f)
+                return
+
+
+            if measure not in data:
+                data[measure] = {}
+            data[measure][str(config)] = value
+            json.dump(data, f)
+    
     def write_measure(measure,value,preprocessing,subset,runiteration=-1):
-        if not os.path.exists("data/"+preprocessing+"/"+subset+"/measures.json"):
-            with open("data/"+preprocessing+"/"+subset+"/measures.json","w") as f:
+        if not os.path.isdir("measure/" + preprocessing):
+            os.mkdir("measure/" + preprocessing)
+
+        if not os.path.exists("measure/"+preprocessing+"/"+subset+".json"):
+            with open("measure/"+preprocessing+"/"+subset+".json","w") as f:
                 if runiteration > -1:
                     value = [value]
                 json.dump({
                     measure: value
                 },f,indent=4)
         else:
-            d = json.loads(open("data/"+preprocessing+"/"+subset+"/measures.json").read())
+            d = json.loads(open("measure/"+preprocessing+"/"+subset+".json").read())
 
             if runiteration > -1:
                 if runiteration == 0:
@@ -333,7 +475,7 @@ class Helpers:
                 d[measure].append(value)
             else: d[measure] = [value]
 
-            with open("data/"+preprocessing+"/"+subset+"/measures.json","w") as f:
+            with open("measure/"+preprocessing+"/"+subset+".json","w") as f:
                 json.dump(d,f,indent=4)
 
     def normalize(data,min=0,max=255):
@@ -385,3 +527,17 @@ class Helpers:
                 corrects += 1
         print("Accurracy",corrects / len(predictions))
 
+    def store(data,folder,filename):
+
+        if not os.path.isdir(folder):
+            os.makedirs(folder)
+
+        if type(data) == np.ndarray:
+            np.save(folder+"/"+filename+".npy",data)
+
+        elif type(data) == dict:
+            with open(folder+"/"+filename+".json","w") as f:
+                json.dump(data,f)
+
+        else:
+            print("Type not supported")
