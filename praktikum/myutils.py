@@ -1,7 +1,7 @@
 import collections
 from genericpath import exists
 import matplotlib.pyplot as plt
-import numpy as np
+#import numpy as np
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.decomposition import PCA
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
@@ -14,11 +14,17 @@ import json
 import itertools
 from tensorflow.keras import layers, losses
 from tensorflow.keras.models import Model
+import random
 
 
 class QuatumCircuit:
 
-    def __init__(self):
+    def __init__(self,plot=False,wires=4,layers=4):
+
+
+        # fixed variables
+        wires = wires
+        layers = layers
 
         def variational_training_circuit(params, data):
             qml.templates.embeddings.AngleEmbedding(
@@ -37,15 +43,22 @@ class QuatumCircuit:
                     qml.CZ(wires=[wire, wire + 1])
             return qml.expval(qml.PauliZ(0))
 
-        # fixed variables
-        wires = 4
-        layers = 4
-
         # init params
-        self.parameters = np.random.uniform(low=-np.pi, high=np.pi, size=(layers, wires, 2))
-        dev = qml.device('default.qubit', wires=wires, shots=1000)
+        #self.parameters = np.random.uniform(low=-np.pi, high=np.pi, size=(layers, wires, 2))
+        self.parameters = np.random.uniform(low=0, high=0, size=(layers, wires, 2))
+        dev = qml.device('default.qubit', wires=wires, shots=1000)   
+        if plot:
+
+            circuit = qml.QNode(func=variational_circuit, device=dev)
+
+            qml.drawer.use_style("black_white")
+            fig, ax = qml.draw_mpl(circuit)(self.parameters)
+            fig.show()
 
         self.training_circuit = qml.QNode(func=variational_training_circuit, device=dev)
+
+    def get_train_circuit(self):
+        return self.training_circuit
 
     # some helpers
     def correctly_classified(self, params, data, target):
@@ -63,6 +76,24 @@ class QuatumCircuit:
             correct_count += int(self.correctly_classified(params, datum, target))
         return cost, correct_count
 
+    def binary_crossentropy_cost(self,params,data,target,offset=1e-7):
+        prediction = self.training_circuit(params, data)
+        if target[0] == 1:
+            target  = 0
+        else:
+            target = 1
+        scaled_prediction = (prediction + (1+offset)) / 2
+        return -(target * np.log(scaled_prediction))
+
+    def distributed_cost2(self, params, data, target,offset=1e-7):
+        """Cost function distributes probabilities to both classes."""
+        prediction = self.training_circuit(params, data)
+        scaled_prediction = (prediction + (1+offset)) / 2
+        predictions = np.array([1 - scaled_prediction, scaled_prediction])
+
+        return -np.sum(target*np.log(predictions))  
+
+
     def distributed_cost(self, params, data, target):
         """Cost function distributes probabilities to both classes."""
         prediction = self.training_circuit(params, data)
@@ -76,7 +107,7 @@ class QuatumCircuit:
         predictions = np.array([0, prediction]) if prediction > 0 else np.array([prediction * -1, 0])
         return np.sum(np.abs(target - predictions))
 
-    def train(self,x_train,y_train,x_test,y_test,epochs):
+    def train(self,x_train,y_train,x_test,y_test,epochs,verbose=1):
 
         optimizer = qml.AdamOptimizer()
         cost_fn = self.distributed_cost
@@ -102,13 +133,17 @@ class QuatumCircuit:
 
             hist['accuracy'].append(training_correct_count / len(x_train))
             hist['val_accuracy'].append(test_correct_count / len(x_test))
-            hist['loss'].append(training_cost / len(x_train))
-            hist['val_loss'].append(test_cost / len(x_test))
+            hist['loss'].append(training_cost.tolist())
+            hist['val_loss'].append(test_cost.tolist())
 
+            if verbose == 1:
+                print("epoch {}: train_cost:{:.3f} train_acc:{:.3f} test_cost:{:.3f}  test_acc:{:.3f}".
+                format(epoch, hist["loss"][-1],hist["accuracy"][-1],hist["val_loss"][-1],hist["val_accuracy"][-1]))
+
+        if verbose != 1:   
             print("epoch {}: train_cost:{:.3f} train_acc:{:.3f} test_cost:{:.3f}  test_acc:{:.3f}".
-            format(epoch, hist["loss"][-1],hist["accuracy"][-1],hist["val_loss"][-1],hist["val_accuracy"][-1]))
-
-        return hist
+                format(epoch, hist["loss"][-1],hist["accuracy"][-1],hist["val_loss"][-1],hist["val_accuracy"][-1]))
+        return hist, self.parameters
 
     def predict(self,x_test):
         prediction = self.training_circuit(self.parameters, x_test)
@@ -119,11 +154,22 @@ class QuatumCircuit:
             return [0, 1]
         
 
-
-
-
-
 class Preprocessing:
+
+
+    def select_nExamples(x,y,n):
+        random.seed(1337)
+        indices = random.sample(range(len(x)), n)
+        return x[indices], y[indices]
+
+    def convertlabel_to_quantumstates(y):
+        y_quantum = []
+        for i in range(len(y)):
+            if y[i] == 0:
+                y_quantum.append(np.array([0,1]))
+            else:
+                y_quantum.append(np.array([1,0]))
+        return np.array(y_quantum)
 
     def minmax_scaler(data,min=0,max=1):
         scaler = MinMaxScaler(feature_range=(min, max))
@@ -143,46 +189,48 @@ class Preprocessing:
 
         return x_train_pca, x_test_pca
 
-    def Autoencoder(x_train,x_test,outputsize=4,epochs=6):
-        #mute tensorflow logging
-        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+    def Autoencoder(x_train,x_test,outputsize=4,epochs=6,verbose=0):
         class AutoencoderTF(Model):
             def __init__(self, latent_dim):
                 super(AutoencoderTF, self).__init__()
 
                 self.encoder = tf.keras.Sequential([
-                    layers.Dense(784, activation='relu'),
-                    layers.Dense(392, activation='relu'),
-                    layers.Dense(16, activation='relu'),
-                    layers.Dense(latent_dim, activation='relu'),
+                    #layers.Dense(784, activation='sigmoid'),
+                    layers.Dense(126, activation='sigmoid'),
+                    layers.Dense(30, activation='sigmoid'),
+                    layers.Dense(30, activation='sigmoid'),
+                    layers.Dense(latent_dim, activation='sigmoid'),
                 ])
 
                 self.decoder = tf.keras.Sequential([
-                    layers.Dense(latent_dim,activation='sigmoid'),
-                    layers.Dense(16, activation='sigmoid'),
-                    layers.Dense(392, activation='sigmoid'),
-                    layers.Dense(784, activation='sigmoid') # output layer
+                    #layers.Dense(latent_dim,activation='relu'),
+                    layers.Dense(30, activation='relu'),
+                    layers.Dense(30, activation='relu'),
+                    layers.Dense(784, activation='relu') # output layer
                 ])
-                self.compile(optimizer='adam', loss=losses.MeanSquaredError())
+                self.compile(optimizer='adam', loss="mae")
                 
             def call(self, x):
                 encoded = self.encoder(x)
                 decoded = self.decoder(encoded)
                 return decoded
 
-        tf.random.set_seed(42)
+        tf.random.set_seed(420)
 
         autoencoder = AutoencoderTF(latent_dim=outputsize)
 
-        x_train = x_train / 255
-        x_test = x_test / 255
+        x_train = Preprocessing.minmax_scaler(x_train)
+        x_test = Preprocessing.minmax_scaler(x_test)
 
         tf.compat.v1.reset_default_graph()
         with tf.device('/gpu:0'):
-            hist = autoencoder.fit(x_train, x_train, epochs=epochs,verbose=0,batch_size=32).history
+            hist = autoencoder.fit(x_train, x_train, epochs=epochs,verbose=verbose,batch_size=32).history
 
         x_train_auto = autoencoder.encoder(x_train).numpy()
-        x_test_auto = autoencoder.encoder(x_test).numpy()
+        x_test_auto = autoencoder.encoder(x_test).numpy()    
+
+        #x_train_auto = Preprocessing.minmax_scaler(x_train_auto,min=0,max=1)
+        #x_test_auto = Preprocessing.minmax_scaler(x_test_auto,min=0,max=1)
 
         del autoencoder
 
@@ -246,7 +294,7 @@ class Complexity_Measures:
         """
 
         #reshape the data to a 2D array
-        dim = data.shape[1]*data.shape[2]
+        dim = data.shape[1]
         data_reshape = data.reshape(data.shape[0],dim)
 
         #calculate the entropy
